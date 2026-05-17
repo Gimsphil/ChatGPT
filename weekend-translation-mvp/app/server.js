@@ -7,96 +7,192 @@ const html = `
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Realtime Translation MVP</title>
+  <title>Realtime Translation App</title>
+
   <style>
     body {
+      margin: 0;
       font-family: Arial, sans-serif;
-      background: #111;
+      background: #0f172a;
       color: white;
+    }
+
+    .container {
       padding: 24px;
+      max-width: 1000px;
+      margin: auto;
+    }
+
+    h1 {
+      font-size: 32px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
     }
 
     button, select {
-      padding: 12px;
-      margin: 8px;
+      padding: 12px 16px;
       font-size: 16px;
+      border-radius: 8px;
+      border: none;
     }
 
-    #log {
-      margin-top: 20px;
-      white-space: pre-wrap;
-      background: #222;
+    .panel {
+      background: #1e293b;
+      border-radius: 12px;
       padding: 16px;
-      border-radius: 8px;
-      min-height: 200px;
+      margin-top: 16px;
+    }
+
+    .title {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    .text {
+      min-height: 120px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+
+    .status {
+      margin-top: 12px;
+      color: #94a3b8;
     }
   </style>
 </head>
 <body>
-  <h1>Realtime Translation MVP</h1>
+  <div class="container">
+    <h1>Realtime Translation App</h1>
 
-  <label>Target language:</label>
-  <select id="language">
-    <option value="ko">Korean</option>
-    <option value="en">English</option>
-    <option value="ja">Japanese</option>
-    <option value="id">Indonesian</option>
-  </select>
+    <div class="controls">
+      <select id="language">
+        <option value="ko">Korean</option>
+        <option value="en">English</option>
+        <option value="ja">Japanese</option>
+        <option value="id">Indonesian</option>
+      </select>
 
-  <button id="start">Start Translation</button>
+      <button id="start">Start</button>
+      <button id="stop">Stop</button>
+    </div>
 
-  <div id="log"></div>
+    <div class="panel">
+      <div class="title">Original Transcript</div>
+      <div id="source" class="text"></div>
+    </div>
+
+    <div class="panel">
+      <div class="title">Translated Transcript</div>
+      <div id="translated" class="text"></div>
+    </div>
+
+    <div class="panel">
+      <div class="title">Session Status</div>
+      <div id="status" class="status">Idle</div>
+    </div>
+  </div>
 
   <script>
-    const log = document.getElementById('log');
+    const sourceBox = document.getElementById('source');
+    const translatedBox = document.getElementById('translated');
+    const statusBox = document.getElementById('status');
 
-    function append(message) {
-      log.textContent += message + '\n';
+    let peerConnection = null;
+    let dataChannel = null;
+    let localStream = null;
+    let translatedAudio = null;
+
+    function setStatus(message) {
+      statusBox.textContent = message;
+      console.log(message);
     }
 
-    document.getElementById('start').onclick = async () => {
-      append('Initializing realtime translation session...');
-
-      const targetLanguage = document.getElementById('language').value;
-
+    async function startTranslation() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
+        setStatus('Requesting microphone...');
+
+        localStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }
         });
 
-        append('Microphone connected');
+        setStatus('Microphone connected');
 
-        const pc = new RTCPeerConnection();
+        peerConnection = new RTCPeerConnection();
 
-        stream.getTracks().forEach(track => {
-          pc.addTrack(track, stream);
+        localStream.getTracks().forEach(track => {
+          peerConnection.addTrack(track, localStream);
         });
 
-        const audioEl = new Audio();
-        audioEl.autoplay = true;
+        translatedAudio = new Audio();
+        translatedAudio.autoplay = true;
 
-        pc.ontrack = (event) => {
-          audioEl.srcObject = event.streams[0];
-          append('Translated audio stream received');
+        peerConnection.ontrack = (event) => {
+          translatedAudio.srcObject = event.streams[0];
+          setStatus('Receiving translated audio stream');
         };
 
-        const channel = pc.createDataChannel('oai-events');
+        dataChannel = peerConnection.createDataChannel('oai-events');
 
-        channel.onmessage = (event) => {
-          append(event.data);
+        dataChannel.onopen = () => {
+          setStatus('Realtime event channel connected');
         };
 
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+        dataChannel.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
 
-        append('SDP offer created');
-        append('Connect this SDP to realtime translation backend');
-        append('Target language: ' + targetLanguage);
+            if (data.type === 'session.input_transcript.delta') {
+              sourceBox.textContent += data.delta;
+            }
+
+            if (data.type === 'session.output_transcript.delta') {
+              translatedBox.textContent += data.delta;
+            }
+
+            if (data.type === 'error') {
+              setStatus('ERROR: ' + JSON.stringify(data));
+            }
+          } catch (err) {
+            console.log(event.data);
+          }
+        };
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+
+        setStatus('SDP offer created');
+
+        setStatus('Realtime translation pipeline ready');
+        setStatus('Waiting for realtime translation backend connection');
 
       } catch (err) {
-        append('ERROR: ' + err.message);
+        setStatus('ERROR: ' + err.message);
       }
-    };
+    }
+
+    function stopTranslation() {
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+      }
+
+      if (peerConnection) {
+        peerConnection.close();
+      }
+
+      setStatus('Stopped');
+    }
+
+    document.getElementById('start').onclick = startTranslation;
+    document.getElementById('stop').onclick = stopTranslation;
   </script>
 </body>
 </html>
@@ -111,5 +207,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Realtime Translation MVP running on port ${PORT}`);
+  console.log(`Realtime Translation App running at http://localhost:${PORT}`);
 });
